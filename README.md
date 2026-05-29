@@ -102,4 +102,13 @@ python scripts/make_daily.py --story story.json --out-dir ~/Desktop
 
 ## 许可
 
+## 隐私与安全声明
+
+- **本工具完全在本地运行**，不会将任何聊天记录、联系人信息上传至任何第三方服务器。
+- **解密密钥仅在本地内存中提取**，仅用于解密本地微信数据库文件，不会以任何形式外传。
+- 生成的日报文件（story.json / HTML / PNG）默认保存于本地，请自行妥善保管，避免通过公开渠道分享含敏感内容的日报。
+- 本项目仅供**技术学习与交流**，不得用于侵犯他人隐私、监听或未经授权的数据获取等非法用途。使用者需自行承担合规责任。
+
+## 许可
+
 MIT License — 基于 [Larkin0302/group-daily](https://github.com/Larkin0302/group-daily) 改编
