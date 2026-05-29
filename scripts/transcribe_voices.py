@@ -14,7 +14,7 @@
 用法:
     transcribe_voices.py \\
         --wav-dir ~/Projects/wechat-decrypt/decoded_voices/ \\
-        --filter "57093713457@chatroom" \\
+        --filter "12345678901@chatroom" \\
         --out /tmp/voices_<群名>_<日期>.json \\
         --model base
 
@@ -72,7 +72,7 @@ def parse_filename(name):
     """从文件名解析 chatroom_id 和 local_id。
 
     文件名格式: <chatroom>_<YYYYMMDD>_<HHMMSS>_<local_id>.wav
-    例: 57093713457@chatroom_20260512_002749_11239.wav
+    例: 12345678901@chatroom_20260512_002749_11239.wav
     """
     m = re.match(r"(.+?)_(\d{8})_(\d{6})_(\d+)\.wav$", name)
     if m:
