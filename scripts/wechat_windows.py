@@ -303,7 +303,7 @@ class WeChatWindows:
         return os.path.join(self._decrypt_dir, db_name)
 
     def _find_group(self, group_name):
-        """从 MicroMsg.db 查找群信息（UserName 含 @chatroom）"""
+        """从 MicroMsg.db 查找联系人或群（优先群聊，其次个人）"""
         micro_path = self._get_db_path("MicroMsg.db")
         if not micro_path or not os.path.exists(micro_path):
             return None
@@ -312,7 +312,7 @@ class WeChatWindows:
         cur = conn.cursor()
 
         try:
-            # 精确匹配群名（只查含 @chatroom 的 UserName）
+            # 第一轮：优先精确匹配群聊
             cur.execute(
                 "SELECT UserName, NickName, Remark FROM Contact "
                 "WHERE UserName LIKE '%@chatroom%' AND (NickName=? OR Remark=?)",
@@ -322,10 +322,42 @@ class WeChatWindows:
             if row:
                 return {"username": row[0], "nick_name": row[1] or row[2] or group_name, "remark": row[2] or ""}
 
-            # 模糊匹配
+            # 第二轮：模糊匹配群聊
             cur.execute(
                 "SELECT UserName, NickName, Remark FROM Contact "
                 "WHERE UserName LIKE '%@chatroom%' AND (NickName LIKE ? OR Remark LIKE ?) "
+                "LIMIT 10",
+                (f"%{group_name}%", f"%{group_name}%"),
+            )
+            rows = cur.fetchall()
+            if rows:
+                r = rows[0]
+                return {"username": r[0], "nick_name": r[1] or r[2] or group_name, "remark": r[2] or ""}
+
+            # 第三轮：精确匹配 UserName（wxid）- 个人聊天
+            cur.execute(
+                "SELECT UserName, NickName, Remark FROM Contact "
+                "WHERE UserName=?",
+                (group_name,),
+            )
+            row = cur.fetchone()
+            if row:
+                return {"username": row[0], "nick_name": row[1] or row[2] or group_name, "remark": row[2] or ""}
+
+            # 第四轮：匹配个人聊天（NickName / Remark / Alias）
+            cur.execute(
+                "SELECT UserName, NickName, Remark, Alias FROM Contact "
+                "WHERE (NickName=? OR Remark=? OR Alias=?)",
+                (group_name, group_name, group_name),
+            )
+            row = cur.fetchone()
+            if row:
+                return {"username": row[0], "nick_name": row[1] or row[2] or group_name, "remark": row[2] or ""}
+
+            # 第五轮：模糊匹配个人聊天
+            cur.execute(
+                "SELECT UserName, NickName, Remark FROM Contact "
+                "WHERE (NickName LIKE ? OR Remark LIKE ?) "
                 "LIMIT 10",
                 (f"%{group_name}%", f"%{group_name}%"),
             )
@@ -357,7 +389,7 @@ class WeChatWindows:
 
             order = "ASC" if asc else "DESC"
             cur.execute(
-                f"SELECT CreateTime, TalkerId, StrContent, Type, SubType, IsSender, BytesExtra "
+                f"SELECT CreateTime, TalkerId, StrContent, StrTalker, Type, SubType, IsSender, BytesExtra "
                 f"FROM MSG "
                 f"WHERE StrTalker=? "
                 f"ORDER BY CreateTime {order} "
@@ -415,7 +447,7 @@ class WeChatWindows:
 
                 order = "ASC" if asc else "DESC"
                 cur.execute(
-                    f"SELECT CreateTime, TalkerId, StrContent, Type, SubType, IsSender, BytesExtra "
+                    f"SELECT CreateTime, TalkerId, StrContent, StrTalker, Type, SubType, IsSender, BytesExtra "
                     f"FROM MSG "
                     f"WHERE StrTalker=? "
                     f"ORDER BY CreateTime {order} "
@@ -470,28 +502,39 @@ class WeChatWindows:
         return str(val) if val is not None else ""
 
     def _extract_sender_from_msg(self, row):
-        """从 MSG 行提取发送者 wxid"""
+        """从 MSG 行提取发送者 wxid。
+
+        群聊: 从 BytesExtra protobuf 提取真实发送者 → 回退 TalkerId
+        私聊: IsSender=1 → 自己, IsSender=0 → StrTalker（对方）
+        """
+        str_talker = WeChatWindows._to_str(row["StrTalker"])
+        is_group = str_talker.endswith("@chatroom")
+
         # IsSender=1 表示是自己发的
         if row["IsSender"] == 1:
             return self._wxid or "我"
 
-        # 群聊消息的真实发送者在 BytesExtra protobuf 中
-        bytes_extra = row["BytesExtra"]
-        if isinstance(bytes_extra, bytes) and bytes_extra:
-            try:
-                import blackboxprotobuf
-                deserialize_data, _ = blackboxprotobuf.decode_message(bytes_extra)
-                if isinstance(deserialize_data, dict) and "3" in deserialize_data:
-                    inner = deserialize_data["3"]
-                    if isinstance(inner, list) and len(inner) > 0:
-                        if isinstance(inner[0], dict) and "2" in inner[0]:
-                            result = inner[0]["2"]
-                            return WeChatWindows._to_str(result)
-            except Exception:
-                pass
+        if is_group:
+            # 群聊消息的真实发送者在 BytesExtra protobuf 中
+            bytes_extra = row["BytesExtra"]
+            if isinstance(bytes_extra, bytes) and bytes_extra:
+                try:
+                    import blackboxprotobuf
+                    deserialize_data, _ = blackboxprotobuf.decode_message(bytes_extra)
+                    if isinstance(deserialize_data, dict) and "3" in deserialize_data:
+                        inner = deserialize_data["3"]
+                        if isinstance(inner, list) and len(inner) > 0:
+                            if isinstance(inner[0], dict) and "2" in inner[0]:
+                                result = inner[0]["2"]
+                                return WeChatWindows._to_str(result)
+                except Exception:
+                    pass
 
-        # 回退：使用 TalkerId
-        return WeChatWindows._to_str(row["TalkerId"]) or "未知"
+            # 回退：使用 TalkerId
+            return WeChatWindows._to_str(row["TalkerId"]) or "未知"
+        else:
+            # 私聊：对方就是 StrTalker
+            return str_talker or "未知"
 
     def _format_msg_content(self, row):
         """根据消息类型格式化消息内容"""
