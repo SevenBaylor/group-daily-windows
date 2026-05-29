@@ -1,6 +1,11 @@
+---
+name: group-daily-windows
+description: 微信群聊日报/周报/月报生成工具（Windows版）。自动拉取微信聊天记录，分析对话生成杂志风 HTML+PNG 长图报告。触发词：日报、周报、月报、群日报、群周报、群月报、群报告。
+---
+
 # group-daily — Windows 适配版
 
-把微信群聊数据变成杂志风"故事型日报"的 Claude Code Skill。产出 HTML + PNG 长图。
+把微信群聊数据变成杂志风"故事型日报/周报/月报"的 Claude Code Skill。产出 HTML + PNG 长图。
 
 **本版本适配 Windows 系统**，使用 PyWxDump 替代 macOS 专属的 vchat CLI。
 
@@ -23,6 +28,27 @@
 | 解密方式 | vchat 打包的 SQLCipher | PyWxDump 内存提取密钥 + AES 解密 |
 | 数据路径 | `~/.vchat/data/decrypted/` | `%TEMP%/group_daily_decrypted/<wxid>/` |
 | 浏览器 | `/Applications/Chrome.app/...` | `C:/Program Files/Google/Chrome/...` 或 Edge |
+
+---
+
+## 报告类型与时间范围（日报 / 周报 / 月报）
+
+收到任务时，先从用户消息中识别报告类型，自动计算时间范围：
+
+| 报告类型 | 触发词 | 时间范围 | 消息量 | --limit |
+|----------|--------|----------|--------|---------|
+| **日报** | 日报、今天、昨天、今日 | 单天（默认最近活跃天，或用户指定日期） | ~100-500 条 | 1000 |
+| **周报** | 周报、本周、这周、上周 | 7 天（默认本周一~周日，或用户指定周） | ~500-2000 条 | 5000 |
+| **月报** | 月报、本月、这个月、上月 | ~30 天（默认本月1日~今日，或用户指定月） | ~1000-5000 条 | 10000 |
+
+**时间计算规则**：
+- 日报未指定日期 → 使用最近一个有聊天记录的活跃日
+- 周报未指定范围 → 本周一 00:00 到周日 23:59
+- 月报未指定范围 → 本月 1 日到今日
+- 用户说"上周"→ 上周一到上周日；"上个月"→ 上月1日到上月最后一天
+- 用户说具体日期如 "5月26日" → 精确到该日
+
+**Windows 适配说明**：`wechat_windows.py history` 不支持 `--since`/`--until` 日期过滤，因此统一拉取较大的 `--limit` 值后，用 `grep` 或 Python 按日期范围过滤消息。
 
 ---
 
@@ -53,15 +79,29 @@ python scripts/wechat_windows.py info
 
 ### Step 1: 拉取聊天记录
 
-**目标**: 获取指定群在指定时段的全部聊天消息。
+**目标**: 获取指定群在目标时段的全部聊天消息。
 
 ```bash
-python scripts/wechat_windows.py history "<群名>" --limit 5000 --asc > /tmp/chat_log_<date>_<group>.txt
+# 根据报告类型选择 --limit（日报 1000 / 周报 5000 / 月报 10000）
+python scripts/wechat_windows.py history "<群名>" --limit <LIMIT> --asc > /tmp/chat_log_<group>_full.txt
 ```
 
-- `--limit`: 单天 1000 条，多天 5000-10000 条
+然后用 grep 按日期过滤到目标范围：
+
+```bash
+# 日报示例：过滤 2026-05-26
+grep "^\[2026-05-26" /tmp/chat_log_<group>_full.txt > /tmp/chat_log_<group>_<date>.txt
+
+# 周报示例：过滤 2026-05-19 ~ 2026-05-25
+grep -E "^\[2026-05-(19|20|21|22|23|24|25)" /tmp/chat_log_<group>_full.txt > /tmp/chat_log_<group>_W21.txt
+
+# 月报示例：过滤 2026-05
+grep "^\[2026-05" /tmp/chat_log_<group>_full.txt > /tmp/chat_log_<group>_202605.txt
+```
+
+- `--limit`: 根据上表选择，宁可多拉不要少拉
 - `--asc`: 时间升序（从早到晚），便于叙事
-- 输出格式与 vchat 兼容: `[YYYY-MM-DD HH:MM] sender: content`
+- 输出格式: `[YYYY-MM-DD HH:MM] sender: content`
 - AI 用 Read 工具分块读取
 
 **群名模糊匹配**: 如果不知道确切群名，可以先查：
@@ -116,20 +156,26 @@ python scripts/context_helper.py check-style --group-name "<群名>"
 
 ### Step 3: 阅读并提炼故事
 
-AI 阅读 `/tmp/chat_log_<date>_<group>.txt`，参照以下引用文件：
+AI 阅读过滤后的聊天记录文件，参照以下引用文件：
 - `references/writing-style.md` — 写作风格指南
 - `references/design-principles.md` — 设计原则
 
-**输出 story.json 结构**（详见 `references/story-schema.md`）：
-- `opening` — 100-200 字开场钩子 + 摘要
-- `lead_title` — 多行主标题，捕捉当日核心
-- `timeline` — 6-8 个故事节点，每个含 time / badge / cast / theme / story / quotes / output
-- `highlights` — 6-8 张人物卡片（不是按发言量，而是"没有他故事就缺一块"的人）
-- `sops` — 群聊中可提取的工作流
-- `qas` — 有价值的问答对
-- `footer_quote` — 当日最共鸣的一句话
+**story.json 结构**（详见 `references/story-schema.md`）：
 
-**原则**: 宁可少不要多。
+| 字段 | 日报 | 周报 | 月报 |
+|------|------|------|------|
+| `time_range` | "09:08 → 22:00" | "05.19 → 05.25" | "05.01 → 05.29" |
+| `lead_eyebrow` | "DAILY REPORT · 日报" | "WEEKLY REPORT · 周报" | "MONTHLY REPORT · 月报" |
+| `lead_title` | 单日核心事件 | 本周主线主题 | 月度叙事弧线 |
+| `timeline` 节点数 | 3-8 个（以小时为单位） | 6-10 个（以天为单位） | 6-8 个（以周/主题为单位） |
+| `highlights` 人数 | 3-8 人 | 4-8 人 | 4-8 人 |
+| `opening` | 100-200 字 | 150-300 字 | 200-400 字 |
+
+**时间格式差异**：
+- 日报：timeline 的 `time` 字段用 `HH:MM`（如 "10:48"）
+- 周报/月报：timeline 的 `time` 字段用日期范围（如 "05.19 — 05.21" 或 "05.05 — 05.08"），`no` 用 "故事 01" 而非 "01"
+
+**原则**: 宁可少不要多。数据少的日子/周/月就如实反映，不凑数。
 
 ---
 
@@ -193,9 +239,15 @@ python scripts/make_daily.py --story /tmp/story_<date>_<group>.json --out-dir ~/
 3. 截图 PNG 长图（Chrome headless + 自适应裁底）
 4. 自动打开生成的文件
 
-输出：
-- `~/Desktop/群日报_<群名>_<日期>.html`
-- `~/Desktop/群日报_<群名>_<日期>.png`
+**输出命名规则**（根据报告类型自动确定前缀）：
+
+| 报告类型 | 文件前缀 | 示例 |
+|----------|----------|------|
+| 日报 | `群日报_` | `群日报_36期大群_20260526.html` |
+| 周报 | `群周报_` | `群周报_36期大群_2026W21.html` |
+| 月报 | `群月报_` | `群月报_36期大群_202605.html` |
+
+> 注意：`make_daily.py` 默认用 `群日报_` 前缀。周报/月报需要手动指定 `--name-suffix` 参数或生成后重命名。
 
 ---
 
@@ -246,6 +298,14 @@ cp /tmp/story_<date>_<group>.json "$GROUP_DAILY_VAULT/<date>_<group>.json"
 3. **头像来源不同** → macOS 用 `head_image.db`，Windows 用 `HardLinkImage.db` + `FileStorage`
 4. **语音转写路径不同** → Windows 上的 SILK 解码可能需要额外配置
 5. **Chrome 路径不同** → 自动检测 Program Files 下的 Chrome/Edge
+
+## 报告类型路由总结
+
+| 用户说 | 拉取范围 | 过滤方式 | story 时间粒度 | 输出前缀 |
+|--------|----------|----------|----------------|----------|
+| "给XX群做日报" | --limit 1000 | grep 单天 | HH:MM | 群日报_ |
+| "给XX群做周报" | --limit 5000 | grep 7天 | MM.DD → MM.DD | 群周报_ |
+| "给XX群做月报" | --limit 10000 | grep 整月 | MM.DD — MM.DD | 群月报_ |
 
 ## 参考
 
